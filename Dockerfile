@@ -9,6 +9,9 @@ ENV BUN_INSTALL="/usr/local" \
     PATH="/usr/local/bin:$PATH" \
     DEBIAN_FRONTEND=noninteractive
 
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+RUN npm config set registry https://registry.npmmirror.com/
+
 # 1. 合并系统依赖安装与全局工具安装，并清理缓存
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -62,6 +65,13 @@ USER node
 ENV HOME=/home/node
 WORKDIR /home/node
 
+RUN mkdir -p /home/node/.linuxbrew/Homebrew && \
+    git clone --depth 1 https://github.com/Homebrew/brew /home/node/.linuxbrew/Homebrew && \
+    mkdir -p /home/node/.linuxbrew/bin && \
+    ln -s /home/node/.linuxbrew/Homebrew/bin/brew /home/node/.linuxbrew/bin/brew && \
+    chown -R node:node /home/node/.linuxbrew && \
+    chmod -R g+rwX /home/node/.linuxbrew
+
 RUN cd /home/node/.openclaw/extensions && \
   git clone --depth 1 https://github.com/soimy/openclaw-channel-dingtalk.git dingtalk && \
   cd dingtalk && \
@@ -101,7 +111,16 @@ ENV HOME=/home/node \
     NODE_PATH=/usr/local/lib/node_modules \
     LANG=en_US.UTF-8 \
     LANGUAGE=en_US:en \
-    LC_ALL=en_US.UTF-8
+    LC_ALL=en_US.UTF-8 \
+    NODE_ENV=production \
+    PATH="/home/node/.linuxbrew/bin:/home/node/.linuxbrew/sbin:/usr/local/lib/node_modules/.bin:${PATH}" \
+    HOMEBREW_NO_AUTO_UPDATE=1 \
+    HOMEBREW_NO_INSTALL_CLEANUP=1 \
+    HOMEBREW_INSTALL_FROM_API=1 \
+    HOMEBREW_API_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/api" \
+    HOMEBREW_BOTTLE_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles" \
+    HOMEBREW_BREW_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/brew.git" \
+    HOMEBREW_CORE_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/homebrew-core.git"
 
 # 暴露端口
 EXPOSE 18789 18790
