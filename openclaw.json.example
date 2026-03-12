@@ -132,15 +132,18 @@
       "allowFrom": ["*"],
       "botToken": "your-token",
       "groupPolicy": "open",
-      "streamMode": "partial"
+      "streaming": "partial"
     },
     "feishu": {
+      "enabled": true,
       "appId": "your-app-id",
       "appSecret": "your-app-secret",
-      "enabled": true,
       "dmPolicy": "open",
       "allowFrom": ["*"],
-      "groupPolicy": "open",
+      "groupPolicy": "allowlist",
+      "groupAllowFrom": ["ou_user1", "ou_user2", "oc_chat1"],
+      "threadSession": true,
+      "replyMode": "auto",
       "streaming": true,
       "footer": {
         "elapsed": true,
@@ -152,6 +155,32 @@
           "appId": "your-app-id",
           "appSecret": "your-app-secret",
           "botName": "OpenClaw Bot"
+        },
+        "work": {
+          "appId": "cli_work_yyy",
+          "appSecret": "work_secret_yyy",
+          "botName": "工作机器人",
+          "dmPolicy": "allowlist",
+          "allowFrom": ["ou_5b990e213988b9bcf396f955a50b2a22", "ou_1234567890abcdef"]
+        },
+        "support": {
+          "appId": "cli_support_zzz",
+          "appSecret": "support_secret_zzz",
+          "botName": "客服机器人",
+          "dmPolicy": "open",
+          "allowFrom": ["*"]
+        }
+      },
+      "groups": {
+        "*": { "requireMention": true },
+        "oc_83e1c0d069b94efc09ad22e05bc06365": {
+          "requireMention": false,
+          "groupPolicy": "open"
+        },
+        "oc_dev_123456789": {
+          "requireMention": false,
+          "groupPolicy": "allowlist",
+          "allowFrom": ["ou_dev_001", "ou_dev_002"]
         }
       }
     },

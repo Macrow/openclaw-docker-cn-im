@@ -41,9 +41,6 @@ RUN apt-get update && \
     # 更新 npm 并安装全局包
     npm install -g npm@latest && \
     npm install -g openclaw@2026.3.11 opencode-ai@latest playwright playwright-extra puppeteer-extra-plugin-stealth @steipete/bird && \
-    # 安装飞书官方插件 CLI
-    curl -fsSL https://sf3-cn.feishucdn.com/obj/open-platform-opendoc/4d184b1ba733bae2423a89e196a2ef8f_QATOjKH1WN.tgz -o /tmp/feishu-openclaw-plugin-onboard-cli.tgz && \
-    npm install -g /tmp/feishu-openclaw-plugin-onboard-cli.tgz && \
     # 安装 bun 和 qmd
     curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash && \
     /usr/local/bin/bun install -g @tobilu/qmd && \
@@ -86,11 +83,10 @@ RUN cd /home/node/.openclaw/extensions && \
   timeout 300 bash ./scripts/upgrade.sh || true && \
   timeout 300 openclaw plugins install . || true && \
   timeout 300 openclaw plugins install @sunnoy/wecom || true && \
-  # 为飞书官方插件 CLI 预置最小配置，避免 update 阶段因缺少 channels.feishu.appId/appSecret 报错
   mkdir -p /home/node/.openclaw && \
   printf '{\n  "channels": {\n    "feishu": {\n      "enabled": false,\n      "appId": "2222222222222222",\n      "appSecret": "1111111111111111",\n      "accounts": {\n        "default": {\n          "appId": "2222222222222222",\n          "appSecret": "1111111111111111",\n          "botName": "OpenClaw Bot"\n        }\n      }\n    }\n  }\n}\n' > /home/node/.openclaw/openclaw.json && \
   # 预执行安装命令（容器内需手动交互，此处仅作声明或环境准备）
-  # feishu-plugin-onboard update && \
+  # npx -y @larksuite/openclaw-lark-tools install && \
   find /home/node/.openclaw/extensions -name ".git" -type d -exec rm -rf {} + && \
   rm -rf /home/node/.openclaw/qqbot/.git && \
   rm -rf /tmp/* /home/node/.npm /home/node/.cache

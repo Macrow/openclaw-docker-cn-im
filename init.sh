@@ -121,6 +121,16 @@ from copy import deepcopy
 from datetime import datetime
 
 WECOM_ACCOUNT_ID_RE = re.compile(r'^[a-z0-9_-]+$')
+FEISHU_ACCOUNT_FIELDS = {
+    'appId', 'appSecret', 'botName', 'dmPolicy', 'allowFrom', 'groupPolicy',
+    'groupAllowFrom', 'domain', 'replyMode', 'threadSession', 'groups',
+    'footer', 'streaming', 'requireMention'
+}
+FEISHU_RESERVED_FIELDS = {
+    'enabled', 'appId', 'appSecret', 'botName', 'dmPolicy', 'allowFrom', 'groupPolicy',
+    'groupAllowFrom', 'streaming', 'footer', 'requireMention', 'threadSession',
+    'replyMode', 'defaultAccount', 'accounts', 'groups'
+}
 WECOM_ACCOUNT_FIELDS = {
     'botId', 'secret', 'dmPolicy', 'allowFrom', 'groupPolicy', 'groupAllowFrom',
     'welcomeMessage', 'sendThinkingMessage', 'agent', 'webhooks', 'network',
@@ -306,12 +316,29 @@ def is_valid_account_id(account_id):
     return WECOM_ACCOUNT_ID_RE.match(str(account_id)) is not None
 
 
+def is_feishu_account_config(value):
+    return isinstance(value, dict) and any(key in value for key in FEISHU_ACCOUNT_FIELDS)
+
+
 def is_wecom_account_config(value):
     return isinstance(value, dict) and any(key in value for key in WECOM_ACCOUNT_FIELDS)
 
 
 def is_qqbot_account_config(value):
     return isinstance(value, dict) and any(key in value for key in QQBOT_ACCOUNT_FIELDS)
+
+
+def get_feishu_accounts(feishu):
+    if not isinstance(feishu, dict):
+        return []
+    accounts = feishu.get('accounts')
+    if not isinstance(accounts, dict):
+        return []
+    result = []
+    for account_id, cfg in accounts.items():
+        if is_valid_account_id(account_id) and is_feishu_account_config(cfg):
+            result.append((account_id, cfg))
+    return result
 
 
 def get_wecom_accounts(wecom):
@@ -425,6 +452,63 @@ def normalize_qqbot_config(channels):
         print('✅ QQ 机器人配置已标准化为多 Bot 结构')
 
 
+def normalize_feishu_config(channels):
+    feishu = channels.get('feishu')
+    if not isinstance(feishu, dict):
+        return
+
+    migrated = False
+    accounts = feishu.get('accounts')
+    if not isinstance(accounts, dict):
+        accounts = {}
+
+    legacy_account = {key: feishu[key] for key in FEISHU_ACCOUNT_FIELDS if key in feishu}
+    if legacy_account:
+        default_account = accounts.get('default', {})
+        if not isinstance(default_account, dict):
+            default_account = {}
+        for key, value in legacy_account.items():
+            default_account.setdefault(key, value)
+        if 'botName' not in default_account:
+            default_account['botName'] = feishu.get('botName', 'OpenClaw Bot')
+        accounts['default'] = default_account
+        migrated = True
+
+    main_account = accounts.pop('main', None) if 'main' in accounts else None
+    if isinstance(main_account, dict):
+        default_account = accounts.get('default', {})
+        if not isinstance(default_account, dict):
+            default_account = {}
+        for key, value in main_account.items():
+            default_account.setdefault(key, value)
+        accounts['default'] = default_account
+        migrated = True
+
+    normalized_accounts = {}
+    for account_id, cfg in accounts.items():
+        if is_valid_account_id(account_id) and is_feishu_account_config(cfg):
+            normalized_accounts[account_id] = cfg
+
+    if normalized_accounts:
+        feishu['accounts'] = normalized_accounts
+        default_account_id = str(feishu.get('defaultAccount') or 'default').strip() or 'default'
+        if default_account_id not in normalized_accounts and 'default' in normalized_accounts:
+            default_account_id = 'default'
+        feishu['defaultAccount'] = default_account_id
+        default_account = normalized_accounts.get(default_account_id) or normalized_accounts.get('default')
+        if isinstance(default_account, dict):
+            if default_account.get('appId'):
+                feishu['appId'] = default_account['appId']
+            if default_account.get('appSecret'):
+                feishu['appSecret'] = default_account['appSecret']
+            if default_account.get('botName'):
+                feishu['botName'] = default_account['botName']
+        migrated = migrated or feishu.get('accounts') != accounts
+
+    if migrated:
+        print('✅ 飞书配置已标准化为多账号结构')
+
+
 def migrate_feishu_config(channels_root):
     feishu = channels_root.get('feishu', {})
     if 'appId' in feishu and 'accounts' not in feishu:
@@ -454,6 +538,8 @@ def migrate_feishu_config(channels_root):
             feishu['appId'] = default_account['appId']
         if default_account.get('appSecret'):
             feishu['appSecret'] = default_account['appSecret']
+
+    normalize_feishu_config(channels_root)
 
 
 def merge_wecom_accounts_from_env(channels, env):
@@ -499,6 +585,69 @@ def merge_wecom_accounts_from_env(channels, env):
     if changed:
         wecom['enabled'] = True
         print('✅ 已从企业微信多账号环境变量同步配置')
+    return changed
+
+
+def merge_feishu_accounts_from_env(channels, env):
+    raw = (env.get('FEISHU_ACCOUNTS_JSON') or '').strip()
+    if not raw:
+        return False
+
+    try:
+        parsed = json.loads(raw)
+    except Exception as ex:
+        raise ValueError(f'FEISHU_ACCOUNTS_JSON 不是合法 JSON: {ex}')
+
+    if not isinstance(parsed, dict):
+        raise ValueError('FEISHU_ACCOUNTS_JSON 必须是对象，格式为 {"default": {...}, "work": {...}}')
+
+    if 'accounts' in parsed and isinstance(parsed.get('accounts'), dict):
+        parsed = parsed['accounts']
+    elif 'feishu' in parsed and isinstance(parsed.get('feishu'), dict):
+        feishu_payload = parsed['feishu']
+        if 'accounts' in feishu_payload and isinstance(feishu_payload.get('accounts'), dict):
+            parsed = feishu_payload['accounts']
+        else:
+            parsed = {key: value for key, value in feishu_payload.items() if key not in FEISHU_RESERVED_FIELDS}
+
+    feishu = channels.get('feishu')
+    if not isinstance(feishu, dict):
+        feishu = {}
+        channels['feishu'] = feishu
+
+    accounts = feishu.get('accounts')
+    if not isinstance(accounts, dict):
+        accounts = {}
+        feishu['accounts'] = accounts
+
+    changed = False
+    for account_id, account_cfg in parsed.items():
+        if not is_valid_account_id(account_id):
+            raise ValueError(f'FEISHU_ACCOUNTS_JSON 账号 ID 不合法: {account_id}，仅支持小写字母、数字、-、_')
+        if not isinstance(account_cfg, dict) or not is_feishu_account_config(account_cfg):
+            raise ValueError(f'FEISHU_ACCOUNTS_JSON 账号配置非法: {account_id}，至少包含 appId/appSecret/botName/dmPolicy/groupPolicy 中的一项')
+
+        old_cfg = accounts.get(account_id)
+        if not isinstance(old_cfg, dict):
+            old_cfg = {}
+        accounts[account_id] = deep_merge(old_cfg, account_cfg)
+        changed = True
+
+    if changed:
+        feishu['enabled'] = True
+        default_account_id = str(feishu.get('defaultAccount') or env.get('FEISHU_DEFAULT_ACCOUNT') or 'default').strip() or 'default'
+        if default_account_id not in accounts and 'default' in accounts:
+            default_account_id = 'default'
+        feishu['defaultAccount'] = default_account_id
+        default_cfg = accounts.get(default_account_id) or accounts.get('default')
+        if isinstance(default_cfg, dict):
+            if default_cfg.get('appId'):
+                feishu['appId'] = default_cfg['appId']
+            if default_cfg.get('appSecret'):
+                feishu['appSecret'] = default_cfg['appSecret']
+            if default_cfg.get('botName'):
+                feishu['botName'] = default_cfg['botName']
+        print('✅ 已从飞书多账号环境变量同步配置')
     return changed
 
 
@@ -557,6 +706,34 @@ def merge_qqbot_bots_from_env(channels, env):
                 qqbot['clientSecret'] = default_cfg['clientSecret']
         print('✅ 已从 QQ 机器人多 Bot 环境变量同步配置')
     return changed
+
+
+def validate_feishu_multi_accounts(channels):
+    feishu = channels.get('feishu')
+    if not isinstance(feishu, dict):
+        return
+
+    accounts = get_feishu_accounts(feishu)
+    if not accounts:
+        return
+
+    account_map = dict(accounts)
+    default_account = (feishu.get('defaultAccount') or '').strip() if isinstance(feishu.get('defaultAccount'), str) else ''
+    if default_account and default_account not in account_map:
+        raise ValueError(f'飞书 defaultAccount 不存在: {default_account}')
+
+    app_id_index = {}
+    for account_id, cfg in accounts:
+        if not is_valid_account_id(account_id):
+            raise ValueError(f'飞书账号 ID 不合法: {account_id}，仅支持小写字母、数字、-、_')
+        app_id = str(cfg.get('appId') or '').strip()
+        if app_id:
+            app_id_index.setdefault(app_id, []).append(account_id)
+
+    duplicate_app_ids = {key: value for key, value in app_id_index.items() if len(value) > 1}
+    if duplicate_app_ids:
+        detail = '; '.join([f"{app_id}: {', '.join(ids)}" for app_id, ids in duplicate_app_ids.items()])
+        raise ValueError(f'飞书 App ID 冲突（可能导致消息路由错乱）: {detail}')
 
 
 def validate_wecom_multi_accounts(channels):
@@ -634,7 +811,10 @@ class SyncContext:
         self.default_dm_policy = env.get('DM_POLICY') or 'open'
         self.default_allow_from = parse_csv(env.get('ALLOW_FROM')) or ['*']
         self.default_group_policy = env.get('GROUP_POLICY') or 'open'
-        self.multi_account_channels = {'wecom', 'qqbot'}
+        self.multi_account_channels = {'feishu', 'wecom', 'qqbot'}
+        self.has_feishu_single_env = bool((env.get('FEISHU_APP_ID') or '').strip() and (env.get('FEISHU_APP_SECRET') or '').strip())
+        self.has_feishu_accounts_env = bool((env.get('FEISHU_ACCOUNTS_JSON') or '').strip())
+        self.has_feishu_any_env = self.has_feishu_single_env or self.has_feishu_accounts_env
         self.has_wecom_single_env = bool((env.get('WECOM_BOT_ID') or '').strip() and (env.get('WECOM_SECRET') or '').strip())
         self.has_wecom_accounts_env = bool((env.get('WECOM_ACCOUNTS_JSON') or '').strip())
         self.has_wecom_any_env = self.has_wecom_single_env or self.has_wecom_accounts_env
@@ -781,6 +961,7 @@ def sync_agent_and_tools(ctx):
 
 def sync_feishu_channel(ctx, channel):
     env = ctx.env
+    account_id = (env.get('FEISHU_DEFAULT_ACCOUNT') or 'default').strip() or 'default'
     channel.update({
         'enabled': True,
         'appId': env['FEISHU_APP_ID'],
@@ -788,6 +969,9 @@ def sync_feishu_channel(ctx, channel):
         'dmPolicy': env.get('FEISHU_DM_POLICY') or ctx.default_dm_policy,
         'allowFrom': parse_csv(env.get('FEISHU_ALLOW_FROM')) or ctx.default_allow_from,
         'groupPolicy': env.get('FEISHU_GROUP_POLICY') or ctx.default_group_policy,
+        'groupAllowFrom': parse_csv(env.get('FEISHU_GROUP_ALLOW_FROM')),
+        'threadSession': parse_bool(env.get('FEISHU_THREAD_SESSION', 'true'), True),
+        'replyMode': env.get('FEISHU_REPLY_MODE') or 'auto',
         'streaming': parse_bool(env.get('FEISHU_STREAMING', 'true'), True),
         'footer': {
             'elapsed': parse_bool(env.get('FEISHU_FOOTER_ELAPSED', 'true'), True),
@@ -796,12 +980,30 @@ def sync_feishu_channel(ctx, channel):
         'requireMention': parse_bool(env.get('FEISHU_REQUIRE_MENTION', 'true'), True),
     })
 
-    default_account = ensure_path(channel, ['accounts', 'default'])
+    feishu_groups = parse_json_object(env.get('FEISHU_GROUPS_JSON'), 'FEISHU_GROUPS_JSON')
+    if feishu_groups is not None:
+        channel['groups'] = feishu_groups
+
+    default_account = ensure_path(channel, ['accounts', account_id])
     default_account.update({
         'appId': env['FEISHU_APP_ID'],
         'appSecret': env['FEISHU_APP_SECRET'],
         'botName': env.get('FEISHU_BOT_NAME') or 'OpenClaw Bot',
+        'dmPolicy': env.get('FEISHU_DM_POLICY') or ctx.default_dm_policy,
+        'groupPolicy': env.get('FEISHU_GROUP_POLICY') or ctx.default_group_policy,
+        'replyMode': env.get('FEISHU_REPLY_MODE') or 'auto',
+        'threadSession': parse_bool(env.get('FEISHU_THREAD_SESSION', 'true'), True),
+        'streaming': parse_bool(env.get('FEISHU_STREAMING', 'true'), True),
+        'requireMention': parse_bool(env.get('FEISHU_REQUIRE_MENTION', 'true'), True),
+        'footer': {
+            'elapsed': parse_bool(env.get('FEISHU_FOOTER_ELAPSED', 'true'), True),
+            'status': parse_bool(env.get('FEISHU_FOOTER_STATUS', 'true'), True),
+        },
     })
+    if env.get('FEISHU_ALLOW_FROM'):
+        default_account['allowFrom'] = parse_csv(env.get('FEISHU_ALLOW_FROM'))
+    if env.get('FEISHU_GROUP_ALLOW_FROM'):
+        default_account['groupAllowFrom'] = parse_csv(env.get('FEISHU_GROUP_ALLOW_FROM'))
     if env.get('FEISHU_DOMAIN'):
         default_account['domain'] = env['FEISHU_DOMAIN']
 
@@ -952,7 +1154,7 @@ def apply_channel_rules(ctx):
                 'dmPolicy': ctx.env.get('TELEGRAM_DM_POLICY') or ctx.default_dm_policy,
                 'allowFrom': parse_csv(ctx.env.get('TELEGRAM_ALLOW_FROM')) or ctx.default_allow_from,
                 'groupPolicy': ctx.env.get('TELEGRAM_GROUP_POLICY') or ctx.default_group_policy,
-                'streamMode': 'partial',
+                'streaming': 'partial',
             }),
             'install': False,
         },
@@ -999,6 +1201,10 @@ def apply_channel_rules(ctx):
             print(f"✅ 渠道同步: {channel_label}")
             continue
 
+        if channel_id == 'feishu' and not ctx.has_feishu_any_env:
+            ctx.disable_channel(channel_id)
+            continue
+
         if channel_id == 'wecom' and not ctx.has_wecom_any_env:
             ctx.disable_channel(channel_id)
             continue
@@ -1027,6 +1233,18 @@ def apply_wecom_legacy_v1_compat(ctx):
 
 
 def apply_multi_account_plugin_state(ctx):
+    feishu_accounts = get_feishu_accounts(ctx.channels.get('feishu'))
+    if ctx.has_feishu_accounts_env:
+        if feishu_accounts:
+            ctx.enable_channel('feishu', install=True)
+            print('✅ 已根据飞书多账号环境变量启用插件')
+        else:
+            ctx.disable_channel('feishu')
+            print('ℹ️ 飞书多账号环境变量未生成有效账号，保持插件禁用')
+    elif not ctx.has_feishu_any_env and not feishu_accounts:
+        ctx.disable_channel('feishu')
+        print('ℹ️ 飞书未提供任何环境变量，保持插件禁用')
+
     wecom_accounts = get_wecom_accounts(ctx.channels.get('wecom'))
     if ctx.has_wecom_accounts_env:
         if wecom_accounts:
@@ -1053,19 +1271,28 @@ def apply_multi_account_plugin_state(ctx):
 
 
 def apply_feishu_plugin_switch(ctx):
-    has_credentials = bool(ctx.env.get('FEISHU_APP_ID') and ctx.env.get('FEISHU_APP_SECRET'))
+    feishu_accounts = get_feishu_accounts(ctx.channels.get('feishu'))
+    has_credentials = bool(ctx.env.get('FEISHU_APP_ID') and ctx.env.get('FEISHU_APP_SECRET')) or bool(feishu_accounts)
+    official_plugin_id = 'openclaw-lark'
+    legacy_plugin_id = 'feishu-openclaw-plugin'
+    if legacy_plugin_id in ctx.entries and official_plugin_id not in ctx.entries:
+        legacy_entry = ctx.entries.get(legacy_plugin_id)
+        if isinstance(legacy_entry, dict):
+            ctx.entries[official_plugin_id] = deepcopy(legacy_entry)
+        del ctx.entries[legacy_plugin_id]
+        print('✅ 已将飞书官方插件 ID 从 feishu-openclaw-plugin 迁移为 openclaw-lark')
     if ctx.feishu_plugin_explicit:
-        ctx.entries['feishu-openclaw-plugin'] = {'enabled': ctx.feishu_plugin_enabled}
+        ctx.entries[official_plugin_id] = {'enabled': ctx.feishu_plugin_enabled}
         ctx.entries['feishu'] = {'enabled': not ctx.feishu_plugin_enabled}
         if ctx.feishu_plugin_enabled:
-            print('✅ 已启用插件开关: 飞书官方插件 feishu-openclaw-plugin')
+            print('✅ 已启用插件开关: 飞书官方插件 openclaw-lark')
             print('🚫 已自动禁用旧版渠道: 飞书')
         else:
-            print('🚫 已禁用插件开关: 飞书官方插件 feishu-openclaw-plugin')
+            print('🚫 已禁用插件开关: 飞书官方插件 openclaw-lark')
             print('✅ 已自动启用旧版渠道: 飞书')
         return
 
-    ctx.entries['feishu-openclaw-plugin'] = {'enabled': False}
+    ctx.entries[official_plugin_id] = {'enabled': False}
     ctx.entries['feishu'] = {'enabled': has_credentials}
     if has_credentials:
         print('ℹ️ 飞书官方插件开关未配置，默认启用旧版飞书渠道并禁用官方插件')
@@ -1084,11 +1311,13 @@ def sync_channels_and_plugins(ctx):
 
     apply_channel_rules(ctx)
     apply_wecom_legacy_v1_compat(ctx)
+    merge_feishu_accounts_from_env(ctx.channels, ctx.env)
     merge_wecom_accounts_from_env(ctx.channels, ctx.env)
     merge_qqbot_bots_from_env(ctx.channels, ctx.env)
     apply_multi_account_plugin_state(ctx)
     apply_feishu_plugin_switch(ctx)
     finalize_plugins(ctx)
+    validate_feishu_multi_accounts(ctx.channels)
     validate_wecom_multi_accounts(ctx.channels)
     validate_qqbot_multi_accounts(ctx.channels)
 
